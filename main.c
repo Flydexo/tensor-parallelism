@@ -1,3 +1,4 @@
+#include <_time.h>
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -13,6 +14,11 @@ typedef struct {
     int cols;
     int** tab;
 } matrix;
+typedef struct {
+    matrix a;
+    matrix* b_cols;
+    int cols;
+} arg_t;
 
 matrix matmul(matrix a, matrix b) {
     assert(a.cols == b.rows);
@@ -48,7 +54,7 @@ matrix random_matrix(int rows, int cols) {
     }
     for(int i = 0;i<c.rows;i++) {
         for(int j = 0;j<c.cols;j++) {
-            c.tab[i][j] = rand()%100;
+            c.tab[i][j] = rand()%10;
         }
     }
     return c;
@@ -88,7 +94,19 @@ matrix matrix_join_cols(matrix* cols, int len) {
     return a;
 }
 
+void* worker(void* arg) {
+    arg_t argument = *(arg_t*)(arg);
+    matrix* mat = malloc(sizeof(matrix)*argument.cols);
+    for(int i = 0;i<argument.cols;i++) {
+         mat[i] = matmul(argument.a, argument.b_cols[i]);
+    }
+    pthread_exit(mat);
+    return NULL;
+}
+
 // ./tp ROWS COLS THREADS
+// THREADS must be a divisor of ROWS and of COLS
+// THREADS unused right now
 int main(int argc, char** argv) {
     srand(time(NULL));
     assert(argc == 4);
@@ -98,29 +116,31 @@ int main(int argc, char** argv) {
     sscanf(argv[3], "%d", &THREADS);
     printf("Multiplying a %d x %d matrix over %d threads\n", ROWS, COLS, THREADS);
     assert(COLS % THREADS == 0 && ROWS % THREADS == 0);
-    // matrix a = random_matrix(ROWS, COLS);
-    // assert(matrix_eq(matrix_join_cols(matrix_split_cols(a), a.cols), a));
-    // free(a.tab);
+    matrix a = random_matrix(ROWS, COLS);
+    matrix b = random_matrix(ROWS, COLS);
+    struct timespec start_multi,start_solo,end_solo,end_multi;
+    clock_gettime(CLOCK_MONOTONIC,&start_multi);
     pthread_t* threads = malloc(sizeof(pthread_t)*THREADS);
-    // for(int i = 0;i<THREADS;i++) {
-    //     pthread_create(&threads[0], NULL, worker, arg);
-    // }
-    // matrix a = (matrix){4,2,malloc(sizeof(int*)*4)};
-    // for(int i = 0;i<a.rows;i++) {
-    //     a.tab[i] = malloc(sizeof(int)*a.cols);
-    // }
-    // a.tab[0][0] = 0; a.tab[0][1] = 1;
-    // a.tab[1][0] = 2; a.tab[1][1] = 3;
-    // a.tab[2][0] = 4; a.tab[2][1] = 5;
-    // a.tab[3][0] = 6; a.tab[3][1] = 7;
-    // matrix b = (matrix){2,2,malloc(sizeof(int*)*2)};
-    // for(int i = 0;i<b.rows;i++) {
-    //     b.tab[i] = malloc(sizeof(int)*b.cols);
-    // }
-    // b.tab[0][0] = 10; b.tab[0][1] = 30;
-    // b.tab[1][0] = 20; b.tab[1][1] = 40;
-    // print_matrix(a);
-    // print_matrix(b);
-    // print_matrix(matmul(a, b));
+    matrix* cols_b = matrix_split_cols(b);
+    arg_t* args = malloc(sizeof(arg_t)*COLS);
+    for(int i = 0;i<THREADS;i++) {
+        args[i] = (arg_t){a,&cols_b[i*COLS/THREADS],COLS/THREADS};
+        pthread_create(&threads[i], NULL, worker, &args[i]);
+    }
+    matrix* cols_c = malloc(sizeof(matrix)*COLS);
+    for(int i = 0;i<THREADS;i++) {
+        void* tmp;
+        pthread_join(threads[i], &tmp);
+        for(int j = 0;j<COLS/THREADS;j++) {
+            cols_c[i*COLS/THREADS+j] = ((matrix*)tmp)[j];
+        }
+    }
+    matrix c_multi = matrix_join_cols(cols_c, COLS);
+    clock_gettime(CLOCK_MONOTONIC, &end_multi);
+    clock_gettime(CLOCK_MONOTONIC, &start_solo);
+    matrix c_solo = matmul(a,b);
+    clock_gettime(CLOCK_MONOTONIC, &end_solo);
+    assert(matrix_eq(c_solo, c_multi));
+    printf("Took %f s for multi and %f s for solo", (double)(end_multi.tv_sec - start_multi.tv_sec) + (end_multi.tv_nsec - start_multi.tv_nsec) / 1e9, (double)(end_solo.tv_sec - start_solo.tv_sec) + (end_solo.tv_nsec - start_solo.tv_nsec) / 1e9);
     return 0;
 }
